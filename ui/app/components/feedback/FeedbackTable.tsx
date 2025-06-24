@@ -13,46 +13,57 @@ import type { FeedbackRow } from "~/utils/clickhouse/feedback";
 import MetricBadges from "~/components/metric/MetricBadges";
 import { useConfig } from "~/context/config";
 import { TableItemShortUuid, TableItemTime } from "~/components/ui/TableItems";
-import { useMemo } from "react";
 import { cn } from "~/utils/common";
 import { Badge } from "../ui/badge";
+import { useMemo } from "react";
 
 export default function FeedbackTable({
   feedback,
+  latestCommentId,
+  latestDemonstrationId,
+  latestFeedbackIdByMetric,
 }: {
   feedback: FeedbackRow[];
+  latestCommentId: string;
+  latestDemonstrationId: string;
+  latestFeedbackIdByMetric: Record<string, string>;
 }) {
   const config = useConfig();
   const metrics = config.metrics;
 
-  const overwrittenRows = useMemo<Set<FeedbackRow>>(() => {
-    const overwrittenRows = new Set<FeedbackRow>();
+  const anyOverwrites = useMemo(() => {
+    // Metric name => array of feedback IDs
+    const metricToItem = feedback
+      .filter((item) => "metric_name" in item)
+      .reduce<Record<string, string[]>>(
+        (metrics, { metric_name, id }) => ({
+          ...metrics,
+          [metric_name]: [...(metrics[metric_name] ?? []), id],
+        }),
+        {},
+      );
 
-    // Mapping of metric name => most recent feedback row
-    const mostRecentFeedbackByMetric = new Map<string, FeedbackRow>();
-
-    for (const row of feedback) {
-      if (!("metric_name" in row)) {
-        continue;
-      }
-
-      const existingRow = mostRecentFeedbackByMetric.get(row.metric_name);
-      if (!existingRow) {
-        mostRecentFeedbackByMetric.set(row.metric_name, row);
-      } else if (new Date(row.timestamp) > new Date(existingRow.timestamp)) {
-        // Current row is newer
-        overwrittenRows.add(existingRow);
-        mostRecentFeedbackByMetric.set(row.metric_name, row);
-      } else {
-        // Current row is older
-        overwrittenRows.add(row);
-      }
-    }
-
-    return overwrittenRows;
-  }, [feedback]);
-
-  const showLatestColumn = overwrittenRows.size > 0;
+    return (
+      // Any comment that's not the latest
+      feedback.some(
+        (row) => row.type === "comment" && row.id !== latestCommentId,
+      ) ||
+      // Any demonstration that's not the latest
+      feedback.some(
+        (row) =>
+          row.type === "demonstration" && row.id !== latestDemonstrationId,
+      ) ||
+      // Any metric where any feedback is not the latest for that metric
+      Object.entries(metricToItem).some(([metric_name, ids]) => {
+        ids.some((id) => id !== latestFeedbackIdByMetric[metric_name]);
+      })
+    );
+  }, [
+    feedback,
+    latestCommentId,
+    latestDemonstrationId,
+    latestFeedbackIdByMetric,
+  ]);
 
   return (
     <Table>
@@ -60,7 +71,7 @@ export default function FeedbackTable({
         <TableRow>
           <TableHead>ID</TableHead>
           <TableHead>Metric</TableHead>
-          {showLatestColumn && <TableHead />}
+          {anyOverwrites && <TableHead />}
           <TableHead>Value</TableHead>
           <TableHead>Time</TableHead>
         </TableRow>
@@ -70,10 +81,17 @@ export default function FeedbackTable({
           <TableEmptyState message="No feedback found" />
         ) : (
           feedback.map((item) => {
+            const isLatestOfType =
+              item.type === "comment"
+                ? item.id === latestCommentId
+                : item.type === "demonstration"
+                  ? item.id === latestDemonstrationId
+                  : latestFeedbackIdByMetric[item.metric_name] === item.id;
+
             return (
               <TableRow
                 key={item.id}
-                className={cn(overwrittenRows.has(item) && "opacity-50")}
+                className={cn(!isLatestOfType && "opacity-50")}
               >
                 <TableCell className="max-w-[200px]">
                   <TableItemShortUuid id={item.id} />
@@ -87,10 +105,12 @@ export default function FeedbackTable({
                   />
                 </TableCell>
 
-                {showLatestColumn && (
+                {anyOverwrites && (
                   <TableCell>
-                    {"metric_name" in item && !overwrittenRows.has(item) && (
+                    {isLatestOfType ? (
                       <Badge variant="secondary">Latest</Badge>
+                    ) : (
+                      <Badge variant="destructive">Overwritten</Badge>
                     )}
                   </TableCell>
                 )}
